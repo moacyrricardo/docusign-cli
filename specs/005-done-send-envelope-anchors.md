@@ -1,6 +1,6 @@
 # 005 — `send`: send a PDF as an envelope with anchor-positioned tabs
 
-Status: **todo**
+Status: **done** (branch `spec-005-send-envelope-anchors`)
 
 The `send` command takes a PDF, a set of declared recipients, and a set of anchor→tab
 bindings, then builds and sends a DocuSign envelope whose signing tabs are positioned by
@@ -318,3 +318,34 @@ Exit codes are 002's `ExitCode` (§6.1).
 
 Network/SDK calls are isolated behind the 002 `ApiClient` factory and the `EnvelopesApi`
 seam so unit tests need no live DocuSign account.
+
+---
+
+## Implementation Notes (branch `spec-005-send-envelope-anchors`)
+
+Built as specified across both modes; all DocuSign calls are mocked. Notes and divergences:
+
+- **`EnvelopeCreator` seam.** The SDK `EnvelopesApi.createEnvelope` call is wrapped in a
+  one-method `EnvelopeCreator` functional interface (`EnvelopeCreator.usingSdk(EnvelopesApi)` in
+  production, a lambda in tests). `EnvelopeSender` depends on the seam, so the envelope-definition
+  build and the error mapping are unit-tested with no live account. This is the spec's "mock
+  `EnvelopesApi`" intent realized without a mocking framework.
+- **Usage errors as `CliException(USAGE)`.** The spec calls for Picocli `ParameterException`;
+  since the parsers/validators run inside `call()` (not as Picocli type converters) they raise
+  `SendUsageException extends CliException(USAGE)` instead — same exit code, same stderr path, and
+  testable by direct invocation. Unknown-type is detected at **parse** time (also → USAGE, also
+  before any network call) rather than in `SendPlanBuilder`; undeclared-recipient errors do
+  accumulate in the builder as specified.
+- **`--yes` source.** `confirmSend` reads `CliContext.assumeYes()` (the resolved `--yes`, 002 §3.3)
+  rather than the command's Picocli `globalOptions` field, so it behaves correctly under direct
+  invocation too. `--yes` suppresses only the final send confirmation; Mode B's per-candidate
+  field prompts still run (no safe default for which recipient signs), per §6.
+- **Prompts/warnings go to stderr** (an injectable `PrintStream` + `InteractivePrompter`) so the
+  table/JSON result on stdout stays pipe-clean.
+- **UNVERIFIED — live anchoring.** Whether DocuSign actually positions tabs on **white / tiny**
+  anchor text is a live-API behaviour that cannot be checked without real credentials. The code
+  builds to spec (`anchorIgnoreIfNotPresent=false`, hardcoded `pixels`/`0`/`0` offsets, §4) and
+  the EnvelopesApi is mocked; this assumption is **not** verified against a live account and should
+  be smoke-tested manually before relying on it.
+- **Out of scope (unchanged):** no `--cc`, no signing order, no `--anchor-x/-y/-units` (001 §7);
+  tab-type extension is the documented enum-constant + `case` + `Tabs`-list path.
