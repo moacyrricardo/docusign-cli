@@ -39,6 +39,9 @@ public final class LoginCommand implements Callable<Integer> {
     @Mixin
     GlobalOptions globalOptions;
 
+    /** Test seam: when set, used instead of building a minter from the context. */
+    private JwtTokenMinter minterOverride;
+
     @Override
     public Integer call() {
         CliContext context = root.context();
@@ -65,9 +68,17 @@ public final class LoginCommand implements Callable<Integer> {
         return ExitCode.OK.code();
     }
 
-    /** Built from the resolved {@link CliContext}; a protected seam so tests can inject a fake. */
+    /** Built from the resolved {@link CliContext}; honors a test-injected override when present. */
     JwtTokenMinter minter(CliContext context) {
+        if (minterOverride != null) {
+            return minterOverride;
+        }
         return new JwtTokenMinter(context.apiClientFactory(), context.config(), context.environment());
+    }
+
+    /** Test seam (package-private): inject a fake minter so {@code call()} runs without the SDK. */
+    void useMinter(JwtTokenMinter minter) {
+        this.minterOverride = minter;
     }
 
     private void validateConfig(Config config) {
