@@ -27,7 +27,8 @@ In scope:
 - A **`TokenSource` strategy** (`JwtTokenSource` | `OAuthTokenSource`) so `CachingTokenProvider`
   stays the single seam `CliContext.authenticatedApiClient()` depends on.
 - The **command-shape decision** (§4): `login` = OAuth (default), `login --jwt` = keypair mode.
-- New credential/config keys: `auth_mode`, optional `client_secret`, loopback `callback_port`.
+- New credential/config keys: `auth_mode`, optional `client_secret`, loopback `callback_port`
+  (default `3972`; overridable per-run via the `login --callback-port <n>` flag).
 
 Out of scope: encrypting tokens at rest; multi-account selection; device-code flow for fully
 headless OAuth; any envelope behavior. See **Known Gaps** (§9).
@@ -46,7 +47,7 @@ https://{env.oAuthBasePath()}/oauth/auth
   ?response_type=code
   &scope=signature%20extended
   &client_id={integration_key}
-  &redirect_uri=http://localhost:{callback_port}/callback
+  &redirect_uri=http://localhost:{callback_port}/docusign-cli-callback
   &code_challenge={S256(code_verifier)}
   &code_challenge_method=S256
   &state={random_nonce}
@@ -61,21 +62,23 @@ https://{env.oAuthBasePath()}/oauth/auth
 
 ### 2.2 Loopback callback server
 
-The redirect URI is a **loopback address** — `http://localhost:{port}/callback` — per the
+The redirect URI is a **loopback address** — `http://localhost:{port}/docusign-cli-callback` — per the
 OAuth-for-native-apps convention (RFC 8252). On `login`:
 
 1. Bind a minimal one-shot HTTP server (JDK `com.sun.net.httpserver.HttpServer`, no new dependency)
-   on `127.0.0.1`. Port resolution: use the configured `callback_port` if set, else bind port `0`
-   (OS-assigned ephemeral) and read back the actual port to build the redirect URI. A **fixed
-   default `callback_port`** (proposed `8088`) is documented because DocuSign requires the exact
-   redirect URI to be **pre-registered on the app** — an ephemeral port cannot be pre-registered, so
-   the *registered* redirect must be `http://localhost:8088/callback` unless the user overrides the
-   port and registers a matching URI. (DocuSign does allow `http://localhost` redirect URIs for this
-   reason.)
+   on `127.0.0.1`. **Port resolution, highest precedence first: the `--callback-port <n>` flag → the
+   `callback_port` credential → the default `3972`.** The default port `3972` and the path
+   `/docusign-cli-callback` are deliberately uncommon to dodge the usual `8080`/`8088` dev-server
+   collisions, giving the full default redirect `http://localhost:3972/docusign-cli-callback`.
+   DocuSign requires the exact redirect URI to be **pre-registered on the app**, so whatever port is
+   chosen, a matching `http://localhost:{port}/docusign-cli-callback` must be registered (DocuSign
+   allows `http://localhost` redirects for native apps). We therefore use a **fixed but configurable**
+   port, not an OS-ephemeral one — an ephemeral port could not be pre-registered. If the chosen port
+   is already bound, fail fast with guidance to pass `--callback-port` / set `callback_port` (§5).
 2. Open the authorize URL via `Desktop.browse(...)` when supported, and **always also print it** so
    SSH/headless users can paste it into a browser elsewhere (same fallback pattern as 003's
    `LoginCommand.tryOpenBrowser`).
-3. Block (with a timeout, proposed 120s) for the browser to redirect to `/callback?code=...&state=...`.
+3. Block (with a timeout, proposed 120s) for the browser to redirect to `/docusign-cli-callback?code=...&state=...`.
 4. Validate `state` matches; on success serve a tiny "You may close this tab" HTML page and hand the
    `code` back to the command; on `error=access_denied` (user clicked Deny) or timeout, fail cleanly.
 5. **Always** stop the server in a `finally` (release the port).
@@ -87,7 +90,7 @@ POST `https://{env.oAuthBasePath()}/oauth/token` (form-encoded):
 ```
 grant_type=authorization_code
 code={code}
-redirect_uri=http://localhost:{port}/callback
+redirect_uri=http://localhost:{port}/docusign-cli-callback
 client_id={integration_key}
 code_verifier={code_verifier}          # PKCE proof
 [client_secret={client_secret}]        # only if auth_mode resolves to a confidential app — §2.4
@@ -213,10 +216,10 @@ accessors on `Config` + builder fields on `Credentials`, mirroring `redirectUri(
 |---|---|---|
 | `auth_mode` | `oauth` or `jwt` — which flow login used / refresh should use | `oauth` (the new default) |
 | `client_secret` | optional confidential-app secret (§2.4 escape hatch) | unset (PKCE-only) |
-| `callback_port` | fixed loopback port for the registered redirect | `8088` |
+| `callback_port` | fixed loopback port for the registered redirect (override per-run with `--callback-port`) | `3972` |
 
 `redirect_uri` (existing) is **reused** but now also documents the loopback form
-`http://localhost:8088/callback` for OAuth; for JWT it keeps its `https://www.docusign.com` meaning.
+`http://localhost:3972/docusign-cli-callback` for OAuth; for JWT it keeps its `https://www.docusign.com` meaning.
 `integration_key` is shared by both modes; `user_id`/`private_key_path` are JWT-only.
 
 **`Token`** (002 §4.2) grows from `{access_token, token_type, expires_at}` to also carry:
@@ -250,8 +253,9 @@ treated as `auth_mode=jwt`, `refresh_token=null`. `isExpired(...)` and the 60s s
 
 ### 3.7 `GlobalOptions` / `RootCommand` / `CliContext`
 
-- **`GlobalOptions`:** unchanged. The `--jwt`/`--key` selector is a `login`-local `@Option`, not a
-  global flag (it only means something for `login`).
+- **`GlobalOptions`:** unchanged. The `--jwt`/`--key` selector and `--callback-port <n>` are
+  `login`-local `@Option`s, not global flags (they only mean something for `login`). `--callback-port`
+  overrides `callback_port` for that run (§2.2 resolution order).
 - **`RootCommand.buildContext()`:** today it builds `JwtTokenMinter` then `CachingTokenProvider`.
   Change it to **pick the `TokenSource` by resolved auth mode**: read `auth_mode` from credentials
   (default `oauth`), build either `OAuthTokenSource` or `JwtTokenSource`, and hand that to
@@ -296,8 +300,9 @@ accepted as aliases for the same option (the JWT flow *is* the keypair flow).
 Validate before starting the browser dance:
 
 - `integration_key` present (shared with JWT) → else `CONFIG`.
-- `callback_port` parseable (default `8088`); `redirect_uri`, if set, must be the loopback form for
-  OAuth → else `CONFIG` with a message pointing at the registered redirect.
+- `callback_port` / `--callback-port` parseable and in range 1–65535 (default `3972`); `redirect_uri`,
+  if set, must be the loopback form for OAuth → else `CONFIG` with a message pointing at the
+  registered redirect.
 - Browser unavailable (headless) is **not** an error: print the URL and keep waiting on the loopback
   server (the user opens it elsewhere on the same host, or tunnels the port).
 
@@ -312,7 +317,7 @@ Error mapping onto 002's `ExitCode` (reusing 003's matrix where it overlaps):
 | `/oauth/token` network failure | `NETWORK` |
 | `/oauth/token` rejects code/verifier/secret | `CONFIG` |
 | Silent refresh: `invalid_grant` (lapsed/rotated) | `NOAUTH` ("run `docusign-cli login`") |
-| Loopback port already in use | `CONFIG` (suggest setting `callback_port`) |
+| Loopback port already in use | `CONFIG` (use `--callback-port` / set `callback_port`, then register the matching redirect URI) |
 
 `login` (either mode) remains the **only** command that may open a browser or prompt; the refresh
 path stays fully silent (§3.3), preserving 003's headless guarantee for 005/006/007.
@@ -355,14 +360,22 @@ For OAuth mode:
 
 1. Create a DocuSign app (integration key) configured for **Authorization Code Grant**; enable
    **PKCE / public-app login** (no secret) if available, else note the `client_secret`.
-2. Register redirect URI **`http://localhost:8088/callback`** (or a custom `callback_port` you then
-   set in `credentials`). DocuSign permits `http://localhost` redirects for native apps.
+2. Register redirect URI **`http://localhost:3972/docusign-cli-callback`** (the default). If `3972`
+   is taken on your machine, choose another port, register `http://localhost:{port}/docusign-cli-callback`
+   to match, and pass `--callback-port {port}` (or set `callback_port` in `credentials`). DocuSign
+   permits `http://localhost` redirects for native apps.
 3. Put `integration_key` in `~/.docusign-cli/credentials` (and `client_secret` only for a
    confidential app). Leave `auth_mode` unset (defaults to `oauth`) or set it explicitly.
 4. Run `docusign-cli login`, sign in in the browser, click Allow. Subsequent commands refresh
    silently until the refresh token lapses (~30 days idle), then `login` again.
 
 JWT/keypair mode is unchanged — see 003 §9; invoke it with `docusign-cli login --jwt`.
+
+**README requirement (must-do).** When this ships, the project `README.md` (the 008 usage docs)
+**must** document: the OAuth `login` flow; the default callback `http://localhost:3972/docusign-cli-callback`;
+the `--callback-port` flag and `callback_port` key for when `3972` is taken (and that the registered
+redirect URI must match the chosen port); and `login --jwt` for the keypair mode. The default port,
+path, and override flag are user-facing contract, not just an internal detail.
 
 ---
 
