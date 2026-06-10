@@ -1,6 +1,7 @@
 # 002 — Foundation scaffold: build, CLI root, config, output, ApiClient
 
-Status: **todo**
+Status: **done**
+Branch: `spec-002-foundation-scaffold`
 
 The project foundation every command spec builds on. This spec fixes the Maven build, the
 package layout, the root Picocli command and global options, the on-disk config + token
@@ -590,3 +591,69 @@ CliException`). The interface and a throwing shell ship in this spec (§2) so 00
   `env.oAuthBasePath()` with no auth header.
 - No live DocuSign calls in unit tests; SDK interactions are exercised behind the factory/seam and
   covered by the command specs that own them.
+
+---
+
+## Implementation Notes
+
+Built on branch `spec-002-foundation-scaffold`. The implementation follows the spec closely;
+divergences and decisions made during coding:
+
+### SDK runtime dependencies — the one substantive build change (in scope)
+
+The spec's §1.1 note assumed "Other transitives (JOSE, OkHttp/Gson used by the SDK) come in via
+the SDK." That is **not true for `docusign-esign-java:5.1.0`**: the SDK declares its entire
+HTTP/JSON/OAuth stack as `optional`, so `mvn dependency:tree` shows it pulling **zero**
+transitives. A runtime probe confirmed that even `new ApiClient()` throws
+`NoClassDefFoundError: jakarta/ws/rs/core/GenericType` — the 5.x `ApiClient` is **JAX-RS/Jersey**
+based (not OkHttp/Gson), and its OAuth/JWT path uses **Apache Oltu** + **jose4j**. To make the
+fat jar actually runnable (a §1.3 requirement), the pom declares these explicitly, with the same
+rationale the spec already applies to BouncyCastle:
+
+- `jakarta.ws.rs:jakarta.ws.rs-api` 3.1.0
+- `org.glassfish.jersey.core:jersey-client`, `jersey-hk2`, `jersey-media-multipart`,
+  `jersey-media-json-jackson` 3.1.7
+- `org.apache.oltu.oauth2:org.apache.oltu.oauth2.client` 1.0.2
+- `org.bitbucket.b_c:jose4j` 0.9.6
+
+The shade `ServicesResourceTransformer` (already specced) is load-bearing here: it merges the
+Jersey/HK2 `META-INF/services` SPI files so `ApiClient` works from the shaded jar. `PackagedJarIT`
+asserts those service files and the `Main-Class` survive shading. **003 should be aware** the SDK
+client is Jersey-based.
+
+### Other deltas
+
+- **`maven-surefire-plugin` 3.2.5** pinned (not in the spec): the Maven default surefire is too old
+  to discover JUnit 5 tests (ran 0 tests). Also added `jackson-datatype-jsr310` so `Instant`
+  (`expires_at`) serializes as an ISO-8601 string rather than a numeric timestamp.
+- **Envelope/auth parent groupers ship with their leaf already registered.** §2 says the two
+  groupers are created "with empty `subcommands = {}`; 006/007 add their leaf." Because §2 also
+  lists the leaf classes (`EnvelopesListCommand`, `EnvelopeStatusCommand`, `AuthStatusCommand`) as
+  shells this spec ships, and §8 requires the `auth`/`envelopes`/`envelope` names to resolve, the
+  leaves are wired into their parents here. 006/007/003 fill in the leaf bodies, not the wiring.
+- **`RootCommand` is `class`, not `final`.** Relaxed so the exit-code tests can subclass it with a
+  throwing subcommand; it carries no inheritance contract otherwise.
+- **`GlobalOptions` adds `-v/--verbose`** (the spec's §6.2 mentions adding `-v`; done here as part
+  of the mixin) and the env flags are a nested `@ArgGroup` class so `--demo`/`--prod` are mutually
+  exclusive.
+- **Environment-from-config heuristic:** when neither `--demo`/`--prod` is given, `base_uri` is
+  matched case-insensitively for `prod`/`account.docusign` → PROD, else DEMO (spec left the exact
+  parse of the `base_uri` hint open).
+- **`Config` perms are best-effort on non-POSIX filesystems** (skips silently where a
+  `PosixFileAttributeView` is unavailable) and atomic-move falls back to a plain replace where
+  `ATOMIC_MOVE` is unsupported; POSIX perm/atomicity is asserted under an `assumeTrue(POSIX)` guard.
+
+### Deferred (not done here)
+
+- **`ARCH.md` was not bootstrapped.** The `spec-eval` flow wants a project `ARCH.md`, but creating
+  it is an interactive questionnaire. The evaluation was done against this spec (the contract owner)
+  as the benchmark; `ARCH.md` can be authored in a later pass.
+- The thin `docusign-cli` wrapper script (§1.3) is explicitly out of scope for v1 and was not added.
+
+### Test summary
+
+41 tests, all green; `mvn package` produces the runnable `target/docusign-cli.jar` (~23 MB).
+Coverage matches §8: Config round-trip + POSIX perms + atomic-write, Token skew-boundary freshness,
+OutputWriter table/JSON + JSON message suppression, CLI wiring + subcommand resolution (incl.
+`auth`), ExitCode→stderr/stdout mapping, ApiClientFactory base-path/bearer/oauth seam, plus a
+shaded-jar integrity check.
