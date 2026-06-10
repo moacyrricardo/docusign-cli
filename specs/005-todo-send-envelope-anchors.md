@@ -271,7 +271,9 @@ confirmation (§7), not the interactive field prompts.
    - `--json`: `{"envelopeId":"...","status":"sent"}`.
 
 `ExitCode.OK` (0) on success. DocuSign `ApiException` is caught and rendered as a clean error
-(status code + DocuSign error body) → `ExitCode.API` (002 §6.1); a not-authenticated error from
+(status code + DocuSign error body) → `ExitCode.API` (002 §6.1); a transport failure arrives as an
+`ApiException` with `getCode() == 0` (the SDK's Jersey `invokeAPI` wraps connection errors and
+throws only `ApiException`) → `ExitCode.NETWORK`; a not-authenticated error from
 `authenticatedApiClient()` propagates to the root handler as `ExitCode.NOAUTH`.
 
 ---
