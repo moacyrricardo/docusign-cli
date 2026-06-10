@@ -18,6 +18,7 @@ import io.github.moacyrricardo.docusign.output.TableWriter;
 import io.github.moacyrricardo.docusign.send.SendCommand;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Option;
 import picocli.CommandLine.Spec;
 import picocli.CommandLine.Model.CommandSpec;
 
@@ -41,7 +42,6 @@ import java.util.concurrent.Callable;
  */
 @Command(
         name = "docusign-cli",
-        mixinStandardHelpOptions = true,
         versionProvider = ManifestVersionProvider.class,
         description = "Drive DocuSign eSignature workflows: login, list/inspect envelopes, "
                 + "and send PDFs with anchor scanning.",
@@ -57,6 +57,10 @@ public class RootCommand implements Callable<Integer> {
 
     @Mixin
     GlobalOptions globalOptions = new GlobalOptions();
+
+    @Option(names = {"-V", "--version"}, versionHelp = true,
+            description = "Print version information and exit.")
+    boolean versionRequested;
 
     @Spec
     CommandSpec spec;
