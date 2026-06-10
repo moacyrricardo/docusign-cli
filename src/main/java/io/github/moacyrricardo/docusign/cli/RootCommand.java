@@ -18,6 +18,8 @@ import io.github.moacyrricardo.docusign.output.TableWriter;
 import io.github.moacyrricardo.docusign.send.SendCommand;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Spec;
+import picocli.CommandLine.Model.CommandSpec;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -51,10 +53,13 @@ import java.util.concurrent.Callable;
                 EnvelopesCommand.class,
                 EnvelopeCommand.class
         })
-public final class RootCommand implements Callable<Integer> {
+public class RootCommand implements Callable<Integer> {
 
     @Mixin
     GlobalOptions globalOptions = new GlobalOptions();
+
+    @Spec
+    CommandSpec spec;
 
     private CliContext context;
 
@@ -124,7 +129,7 @@ public final class RootCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // No subcommand selected: print usage and signal a usage error.
-        new picocli.CommandLine(this).usage(System.err);
+        spec.commandLine().usage(System.err);
         return ExitCode.USAGE.code();
     }
 }
