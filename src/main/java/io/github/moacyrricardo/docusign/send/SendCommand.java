@@ -238,7 +238,8 @@ public final class SendCommand implements Callable<Integer> {
     }
 
     private boolean confirmSend(CliContext context, SendPlan plan) {
-        if (globalOptions.yes || context.assumeYes()) {
+        // --yes is resolved into the context by the root (002 §3.3); honour that single source.
+        if (context.assumeYes()) {
             return true;
         }
         StringBuilder summary = new StringBuilder("\nAbout to send:\n");
