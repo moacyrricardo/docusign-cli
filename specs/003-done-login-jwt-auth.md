@@ -1,6 +1,6 @@
 # 003 — Login & persistent JWT authentication
 
-Status: **todo** (spec — prescriptive decision; ready to build)
+Status: **done** (branch `spec-003-login-jwt-auth`)
 
 Implements the JWT Grant auth flow framed in [001 §4](001-todo-cli-design.md). Provides the
 `login` and `auth status` commands, the JWT token-minting mechanics, the on-disk token cache,
@@ -387,4 +387,35 @@ a grossly wrong local clock, which we cannot fix — we only hint.
   warning; assert no network calls (mock factory verifies zero interactions).
 - Live JWT against `account-d.docusign.com` is a manual smoke test, not part of CI (needs real
   consent + key).
-```
+
+---
+
+## Implementation Notes (branch `spec-003-login-jwt-auth`)
+
+Built as specified; the SDK-5.1.0 (Jersey) corrections in §4 held — `requestJWTUserToken` compiled
+and ran with the 5-arg signature, `OAuth.OAuthToken`/`OAuth.UserInfo`/`OAuth.Account` are the
+nested 5.x types. Divergences and decisions made during coding:
+
+- **Minter SDK seams.** `JwtTokenMinter` isolates the two SDK calls behind overridable
+  package-visible methods (`requestJwt(ApiClient, byte[])` and `fetchAccount(ApiClient, String)`)
+  so unit tests inject a fake `ApiClient`/account with no live endpoint. The class is therefore
+  non-final (it was unspecified); `PrivateKeyLoader` stays package-private.
+- **Login minter injection.** `LoginCommand` is `final` (matches the other command shells), so the
+  test seam is a package-private `useMinter(JwtTokenMinter)` setter rather than a subclass override.
+  `login` builds its minter from `CliContext`'s public pieces (`apiClientFactory()`, `config()`,
+  `environment()`) — the 002 `CliContext` contract was **not** extended with a minter accessor.
+- **`auth status` parent chain.** `AuthStatusCommand` reaches the root `CliContext` via
+  `@ParentCommand AuthCommand` → a new `AuthCommand.root()` (`@ParentCommand RootCommand`), since
+  the leaf's direct Picocli parent is `auth`, not the root. `AuthCommand` gained the `root` field
+  and accessor; its prior bare-usage behavior is unchanged.
+- **Consent URL is built deterministically** (§5) in the minter and reused by `login` on the
+  re-prompt — it is never parsed out of the error body. `consent_required` is detected from either
+  the `ApiException` response body or message.
+- **Host-mismatch heuristic.** `auth status` flags a mismatch by testing whether the stored
+  `base_uri` host contains `www.docusign.net` (prod) against the resolved `Environment`. This is a
+  pragmatic check independent of `RootCommand`'s `base_uri`→`Environment` inference; both are
+  substring heuristics and agree for the standard demo/prod hosts.
+- **Dual output contract honored:** `login` and `auth status` emit both a human view
+  (`message`/`record`) and a structured `object(...)` payload, per 002 §5.
+- **Out of scope / deferred:** no live JWT smoke test in CI (needs real consent + key); grossly
+  wrong local clock is only hinted (§11), not corrected.
