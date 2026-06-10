@@ -208,8 +208,10 @@ truth**. The decisions:
 1. **Exit codes:** one **granular** `ExitCode` enum owned by 002 §6.1
    (`OK/USAGE/CONFIG/NOAUTH/CONSENT/NOTFOUND/API/NETWORK/INPUT/SOFTWARE`); all specs map onto it,
    none invent numbers.
-2. **PDFBox 3.x** (`Loader.loadPDF`), pinned in 002; the effective-font-size and fill-color
-   extraction in 004 §2.2–§2.3 carry a **spike-before-build** flag.
+2. **PDFBox 3.x** (`Loader.loadPDF`), pinned in 002. The effective-font-size and fill-colour
+   extraction were **validated by a spike** (PDFBox 3.0.3) — results in 004 §10; the spike caught
+   two would-be-silent failures (colour operators unregistered; colour reset in `writeString`) and
+   confirmed the `AnchorCandidate` contract is unchanged.
 3. **Feature packages:** `auth`, `anchor`, `send`, `envelope` for command/feature classes;
    `cli`/`config`/`output`/`docusign` for foundation (002 §2).
 4. **`envelopes list` filters:** two independent, combinable (AND) client-side filters —

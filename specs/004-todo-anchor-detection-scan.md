@@ -45,13 +45,46 @@ enums, `TypeGuesser`, and `EncryptedPdfException` are **public** (consumed by 00
 
 ### 2.1 The text stripper
 
-`CandidateTextStripper extends org.apache.pdfbox.text.PDFTextStripper`. It overrides:
+`CandidateTextStripper extends org.apache.pdfbox.text.PDFTextStripper`. Two non-obvious things are
+**required** (both proven by the spike, §10) and easy to miss:
+
+1. **Register the non-stroking colour operators.** `PDFTextStripper` does *not* process `rg/g/k/
+   cs/sc/scn` by default, so `getGraphicsState().getNonStrokingColor()` stays at the **default
+   black** and NEAR_WHITE never fires. Register them in the constructor.
+2. **Read colour during stream execution, not in `writeString`.** With `setSortByPosition(true)`,
+   `writeString` runs *after* the page is processed, on a **reset** graphics state — so colour read
+   there is always default black. Capture colour per glyph in `processTextPosition` (state is live)
+   into an **identity map**, then look it up in `writeString` (the same `TextPosition` instances
+   reach both callbacks — confirmed). Size, by contrast, is baked into each `TextPosition` and is
+   safe to read in `writeString`.
 
 ```java
-@Override
-protected void writeString(String text, List<TextPosition> textPositions) {
-    // text          = the run's string as PDFBox assembled it
-    // textPositions = per-glyph positions; used for geometry + font size
+final class CandidateTextStripper extends PDFTextStripper {
+    private final Map<TextPosition, float[]> fillRgbByGlyph = new IdentityHashMap<>();
+    private final List<AnchorCandidate> candidates = new ArrayList<>();
+
+    CandidateTextStripper() throws IOException {
+        setSortByPosition(true);
+        addOperator(new SetNonStrokingColorSpace(this));
+        addOperator(new SetNonStrokingColor(this));
+        addOperator(new SetNonStrokingColorN(this));
+        addOperator(new SetNonStrokingDeviceRGBColor(this));
+        addOperator(new SetNonStrokingDeviceGrayColor(this));
+        addOperator(new SetNonStrokingDeviceCMYKColor(this));   // contentstream.operator.color.*
+    }
+
+    @Override                       // stream execution — graphics state is LIVE
+    protected void processTextPosition(TextPosition t) {
+        fillRgbByGlyph.put(t, toRgbOrNull(getGraphicsState().getNonStrokingColor()));
+        super.processTextPosition(t);
+    }
+
+    @Override                       // post-sort — use TextPosition geometry + the captured colour
+    protected void writeString(String run, List<TextPosition> tps) {
+        // effective size from tps (§2.2); fill colour from fillRgbByGlyph (§2.3); classify (§3)
+    }
+
+    List<AnchorCandidate> getCandidates() { return candidates; }
 }
 ```
 
@@ -59,56 +92,66 @@ Per text run it captures:
 
 | Field        | Source |
 |--------------|--------|
-| `string`     | the `text` argument (trimmed for matching; raw kept for display) |
+| `string`     | the `run` argument (trimmed for matching; raw kept for display) |
 | `page`       | `getCurrentPageNo()` (1-based, as PDFBox reports) |
-| `x`, `y`     | `textPositions.get(0).getXDirAdj()` / `getYDirAdj()` (top-left of first glyph; y in PDFBox display space) |
-| `fontSize`   | **effective** font size — see §2.2 |
-| `color`      | non-stroking (fill) color — see §2.3 |
+| `x`, `y`     | `tps.get(0).getXDirAdj()` / `getYDirAdj()` (top-left of first glyph; y in PDFBox display space) |
+| `fontSize`   | **effective** on-page size from the `TextPosition` — see §2.2 |
+| `color`      | non-stroking (fill) color from `fillRgbByGlyph` — see §2.3 |
 
-Each run that passes a heuristic (§3) becomes an `AnchorCandidate` accumulated in a list the
-stripper exposes via `List<AnchorCandidate> getCandidates()`.
-
-The stripper is driven in **layout-agnostic** mode but with `setSortByPosition(true)` so that
-multi-column hidden text is assembled in reading order. We do **not** restrict to a page range
-at the stripper level — the caller selects pages via `ScanOptions` (default: all pages) and the
-stripper honors `setStartPage`/`setEndPage` accordingly.
+The stripper uses `setSortByPosition(true)` so multi-column hidden text is assembled in reading
+order. We do **not** restrict the page range at the stripper level — the caller selects pages via
+`ScanOptions` (default: all pages) and the stripper honors `setStartPage`/`setEndPage`.
 
 ### 2.2 Effective font size
 
-A glyph's on-page size is `textSize * horizontalScale` derived from the text and CTM matrices,
-not the raw font size in the content stream. Compute it per glyph from
-`TextPosition.getFontSizeInPt()` combined with `getXScale()`:
+A glyph's on-page size is its content-stream font size folded through the text matrix **and the
+CTM**. The spike (§10) measured every candidate accessor against known fixtures and settled it:
 
 ```java
-float effectiveSize = tp.getXScale(); // already folds in font size * scaling * CTM
+float effectiveSize = tp.getXScale();   // text-rendering-matrix scale: folds Tm AND CTM
 ```
 
-Use `getXScale()` (PDFBox's "adjusted" size in display units) as the effective font size. For a
-multi-glyph run, take the **maximum** glyph `getXScale()` across `textPositions` (so a run is
-"tiny" only if all of its glyphs are tiny). Store this as `AnchorCandidate.fontSize`.
+| Accessor | 12pt, no transform | 12pt under `cm` scale 0.5 (on-page 6pt) | Verdict |
+|---|---|---|---|
+| `getFontSize()` | 12 | **12** (ignores everything) | ✗ raw `Tf` only |
+| `getFontSizeInPt()` | 12 | **12 — wrong** (folds Tm but **ignores the CTM**) | ✗ the trap |
+| `getXScale()` / `getYScale()` | 12 | **6 ✓** (folds Tm+CTM; rotation-safe) | ✓ use this |
+| `getHeightDir()` | ~6.9 (glyph bbox, char-dependent) | ~3.5 | ✗ not a font-size proxy |
+
+**Do not** "simplify" to `getFontSizeInPt()` — it looks like the obvious choice and silently
+under-reports size whenever a `cm` transform scales the text, missing genuinely tiny anchors.
+`getXScale()`/`getYScale()` are equal under isotropic scaling; for the rare anisotropic case
+(e.g. horizontal-only `Tz`) use the **height axis** `getYScale()` so a merely-condensed run isn't
+mistaken for tiny. For a multi-glyph run, take the **maximum** effective size across `tps` (a run
+is "tiny" only if *all* its glyphs are tiny). Store as `AnchorCandidate.fontSize`.
 
 ### 2.3 Fill color from the graphics state
 
-`writeString` does not receive color directly. Capture it by also overriding the operator-level
-hooks so the current non-stroking color is known when a run is emitted. Concretely, read the
-graphics state at write time:
+Colour is **ambient graphics state**, not a property of the run, and §2.1 establishes the two
+rules the spike proved are mandatory: (a) the colour operators must be **registered**, or the
+state never leaves default black; (b) the read must happen in `processTextPosition` while the
+state is **live**, because under `setSortByPosition(true)` the state is reset by the time
+`writeString` runs. So capture per glyph during processing:
 
 ```java
-PDColor fill = getGraphicsState().getNonStrokingColor();
-float[] rgb = fill.getColorSpace().toRGB(fill.getComponents()); // 0..1 floats
+PDColor fill = getGraphicsState().getNonStrokingColor();   // in processTextPosition
+float[] rgb  = toRgbOrNull(fill);                          // null if not RGB-convertible
 ```
 
-Convert to 0–255 ints and store as `java.awt.Color` (no alpha) on the candidate. If the color
-space cannot be converted to RGB (rare, e.g. certain separation/pattern color spaces), treat the
-fill as **unknown** → the NEAR_WHITE heuristic does not fire (color is recorded as `null` and
-that candidate can still qualify via the TINY heuristic).
+```java
+static float[] toRgbOrNull(PDColor c) {
+    if (c == null) return null;
+    try { return c.getColorSpace().toRGB(c.getComponents()); }  // 0..1 floats; DeviceCMYK 0,0,0,0 → white
+    catch (Exception e) { return null; }                        // separation/pattern → unknown
+}
+```
 
-> **⚠ Spike required before building.** The two computations in §2.2 (effective on-page font size —
-> `getXScale()` vs `getFontSizeInPt()` × text/CTM scaling) and §2.3 (reading the non-stroking color
-> from the graphics state *at the moment a run is written*) are the highest-risk details in the
-> whole project and PDFBox's behavior here is easy to get subtly wrong. Validate both empirically
-> against a real white-text/tiny-text PDF (PDFBox 3.x) **before** locking the `AnchorCandidate`
-> shape, since 005 depends on it. The field set may change as a result of the spike.
+In `writeString`, look the run's glyphs up in `fillRgbByGlyph` (identity map) and store the colour
+on the candidate (convert 0–1 → 0–255 ints; `java.awt.Color`, no alpha). The spike confirmed
+DeviceRGB white, **DeviceCMYK white (0,0,0,0 → 1,1,1)**, and near-white (.996) all convert
+correctly and clear the 245/channel floor. If the colour space cannot convert to RGB (rare —
+certain separation/pattern spaces), colour is recorded as `null` → NEAR_WHITE does not fire, but
+the candidate can still qualify via the TINY heuristic.
 
 ---
 
@@ -340,8 +383,15 @@ conventions only; the mapping is intentionally small and extensible.
 - **Encrypted fixture:** save a fixture with an owner/user password via
   `StandardProtectionPolicy`; assert `scan` throws `EncryptedPdfException` and the command maps it
   to the error exit code.
-- **Color extraction:** verify `getNonStrokingColor()` → RGB conversion against a known fill,
-  including a separation/pattern color space producing `color == null` without throwing.
+- **Color extraction:** verify per-glyph capture → RGB conversion against a known fill, including
+  **DeviceCMYK white (0,0,0,0 → 1,1,1)** and a separation/pattern space producing `color == null`
+  without throwing.
+- **Regression — colour operators registered (spike §10):** a white-text fixture must yield a
+  `NEAR_WHITE` candidate. Guards against the default-black failure mode (forgetting the
+  `SetNonStrokingColor*` operators makes every run read black → silent no-op).
+- **Regression — CTM-scaled tiny text (spike §10):** `_sig_363_` at 12pt under a `cm` scale of 0.5
+  (on-page 6pt) must be flagged `TINY` (asserts `getXScale`, not `getFontSizeInPt`, drives size —
+  `getFontSizeInPt` would report 12 and miss it).
 
 ---
 
@@ -353,3 +403,31 @@ conventions only; the mapping is intentionally small and extensible.
 - Stroke-color-only hidden text (we inspect fill / non-stroking color only).
 - Any DocuSign auth/API or tab construction — that is 005's responsibility, which consumes
   `AnchorScanner.scan` (§4).
+
+---
+
+## 10. Spike results (PDFBox 3.0.3 — validated, not theoretical)
+
+A throwaway spike (PDFBox 3.0.3, JDK) generated fixtures at known sizes/colours/transforms and
+dumped every candidate accessor, capturing colour in both the `processTextPosition` (live) and
+`writeString` (post-sort) paths. Findings, now baked into §2:
+
+1. **Colour operators are not registered by default.** Without registering `SetNonStrokingColor*`,
+   `getNonStrokingColor()` returns the default **black (DeviceGray 0,0,0)** for *all* text — the
+   three white fixtures included. NEAR_WHITE would never fire. **Fix:** register them (§2.1).
+2. **`writeString` colour is reset, not just stale.** With `setSortByPosition(true)` the live
+   colours (white / CMYK-white / near-white / black) were correct in `processTextPosition` but
+   **every** run read `(0,0,0) DeviceGray` in `writeString`. **Fix:** capture in
+   `processTextPosition` (§2.3).
+3. **Identity bridge works.** The same `TextPosition` instances reach both callbacks
+   (`IdentityHashMap` lookup succeeded on every glyph), so `writeString`'s string assembly is kept
+   while colour comes from the live-captured map.
+4. **Effective size = `getXScale()`/`getYScale()`, not `getFontSizeInPt()`.** Under a `cm` scale of
+   0.5, `getFontSizeInPt()` returned **12** (wrong; ignores the CTM) while `getXScale()` returned
+   **6** (correct). Both axes were correct under no-transform, Tm-scale, and 90° rotation.
+   `getHeightDir()` is glyph-bbox height (≈0.58×size here), not a size proxy.
+5. **Colour-space conversion is fine.** DeviceRGB white, DeviceCMYK white (0,0,0,0), and
+   near-white (.996) all convert via `toRGB()` and clear the 245/channel floor; black does not.
+
+The `AnchorCandidate` shape in §4 is **unchanged** by the spike — only the stripper's internals
+(operator registration + capture timing + size accessor) changed — so 005's contract holds.
