@@ -1,6 +1,6 @@
 # 007 — `envelope status <id>`: single-envelope status lookup
 
-Status: **todo**
+Status: **doing** — branch `spec-007-envelope-status`
 
 Prescriptive spec for the `envelope status <envelopeId>` command: fetch and display the
 status of one envelope by ID, optionally including per-recipient status. Implements goal §2.3
