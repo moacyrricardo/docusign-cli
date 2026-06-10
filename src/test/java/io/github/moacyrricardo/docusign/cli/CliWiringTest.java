@@ -97,4 +97,44 @@ class CliWiringTest {
         int exit = cli.execute();
         assertEquals(ExitCode.USAGE.code(), exit);
     }
+
+    // --- spec 008: per-subcommand --help and de-duplicated --demo/--prod ---
+
+    @Test
+    void everySubcommandAdvertisesHelp() {
+        CommandLine root = root();
+        for (String name : new String[] {"login", "auth", "scan", "send", "envelopes", "envelope"}) {
+            String usage = root.getSubcommands().get(name).getUsageMessage();
+            assertTrue(usage.contains("-h, --help"),
+                    name + " usage should advertise -h, --help:\n" + usage);
+        }
+    }
+
+    @Test
+    void subcommandHelpShortCircuitsToSuccess() {
+        // Previously `send --help` errored with "Missing required parameter: '<pdf>'".
+        CommandLine cli = new CommandLine(new RootCommand());
+        assertEquals(ExitCode.OK.code(), cli.execute("send", "--help"));
+        assertEquals(ExitCode.OK.code(), cli.execute("envelopes", "list", "--help"));
+    }
+
+    @Test
+    void environmentFlagsAreListedOnce() {
+        // Regression: --demo/--prod were each listed twice (ArgGroup-in-mixin double registration).
+        assertEquals(1, optionListings(root().getUsageMessage(), "--demo"));
+        assertEquals(1, optionListings(root().getUsageMessage(), "--prod"));
+        String sendUsage = root().getSubcommands().get("send").getUsageMessage();
+        assertEquals(1, optionListings(sendUsage, "--demo"));
+        assertEquals(1, optionListings(sendUsage, "--prod"));
+    }
+
+    @Test
+    void rootAdvertisesVersion() {
+        assertTrue(root().getUsageMessage().contains("-V, --version"));
+    }
+
+    /** Counts option-list entries for {@code flag} (lines that begin with it), ignoring the synopsis. */
+    private static long optionListings(String usage, String flag) {
+        return usage.lines().filter(l -> l.strip().startsWith(flag)).count();
+    }
 }
