@@ -1,6 +1,6 @@
 # 006 — `envelopes list`: filtered envelope listing
 
-Status: **todo**
+Status: **done** — branch `spec-006-envelopes-list`
 
 Prescriptive spec for the `envelopes list` command: list the impersonated user's
 envelopes with date, status, subject, and document-name filters, rendered as a human table or
@@ -294,3 +294,46 @@ Exit codes (002 §6.1): `OK` (0) success incl. empty; `USAGE` (2) bad `--status`
   DocuSign demo environment and assert non-error exit + parseable `--json`. Gate behind an
   env-var so CI without credentials skips it.
 - Mock `EnvelopesApi` and **003 `TokenProvider`** (no live calls in unit tests).
+
+---
+
+## Implementation Notes
+
+Branch: `spec-006-envelopes-list` (stacked on `spec-005-send-envelope-anchors`).
+
+How the implementation diverged from or refined the spec:
+
+- **Read seam is `EnvelopeQuery`, not a raw mocked `EnvelopesApi`.** The SDK's
+  `EnvelopesApi` exposes paging only through an inner-class `ListStatusChangesOptions`
+  whose construction (`api.new ...`) makes the API awkward to mock directly. Instead the
+  DocuSign access is hidden behind a narrow `EnvelopeQuery` interface
+  (`listStatusChanges(...)` + `listDocumentNames(...)`); production wraps the SDK via
+  `EnvelopeQuery.usingSdk(api)` and tests supply a hand-written stub. This keeps
+  `EnvelopeLister` (the paging/filter engine) fully unit-testable with no SDK inner-class
+  gymnastics, satisfying §7's "no live calls" requirement more cleanly than mocking
+  `EnvelopesApi` itself.
+- **Date logic extracted to `DateWindow`.** §3.2/§6 date parsing, the 30-day default, the
+  date-only start/end-of-day resolution, and the `from > to` rejection live in a small
+  value object (`DateWindow.resolve(from, to, now, zone)`) rather than inline in the
+  command, so they are table-tested in isolation (`DateWindowTest`). `now`/`zone` are
+  injected for deterministic tests.
+- **Error mapping confirmed against SDK-5.1.0 reality.** As §6 anticipated, Jersey's
+  `invokeAPI` surfaces transport failures as `ApiException` with `getCode() == 0`; these map
+  to `ExitCode.NETWORK`, HTTP 429 keeps a rate-limit hint, and any other non-zero code maps
+  to `ExitCode.API`. Covered by `EnvelopeListerTest.apiExceptionCode0MapsToNetwork` /
+  `apiExceptionNonZeroMapsToApi`.
+- **Recipient summary string lives in the command, not in `EnvelopeRow`.** `EnvelopeRow`/
+  `RecipientSummary` carry the structured per-recipient data (so table and JSON stay in
+  sync); the compact `Name <email>: status; … (+N more)` rendering is presentation logic in
+  `EnvelopesListCommand`. The 0/1/2/3+ and overflow cases, the truncation footer, the
+  no-results message, and the default-window stderr note are covered end-to-end by
+  `EnvelopesListCommandTest` (using the command's `useQuery`/`useNow`/`useNotesStream` test
+  seams).
+- **Recipient summary currently reflects signers only.** `EnvelopeRow.from` reads
+  `recipients.getSigners()`; non-signer recipient types (carbon copies, agents, etc.) are not
+  yet summarised. The `recipientType` field is therefore always `"signer"`. This is
+  sufficient for the common case in §5 and can be widened later without changing the DTO
+  shape.
+- **No integration test committed.** The optional demo-account integration test (§7) is left
+  out of the suite to keep CI credential-free; the `EnvelopeQuery` seam makes adding one
+  later straightforward.
