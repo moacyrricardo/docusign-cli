@@ -41,6 +41,33 @@ final class EnvelopeFixtures {
         return s;
     }
 
+    /** A signer with an explicit routing order (for 007 ordering tests). */
+    static Signer signerWithOrder(String name, String email, String status, String order) {
+        Signer s = signer(name, email, status);
+        s.setRoutingOrder(order);
+        return s;
+    }
+
+    /** A standalone {@link Recipients} carrying the given signers (007 --recipients). */
+    static Recipients recipients(Signer... signers) {
+        Recipients r = new Recipients();
+        r.setSigners(new ArrayList<>(List.of(signers)));
+        return r;
+    }
+
+    /** An envelope with all four 007 timestamps set; pass null to leave one absent. */
+    static Envelope statusEnvelope(String id, String subject, String status,
+                                   String created, String sent, String completed) {
+        Envelope e = new Envelope();
+        e.setEnvelopeId(id);
+        e.setEmailSubject(subject);
+        e.setStatus(status);
+        e.setCreatedDateTime(created);
+        e.setSentDateTime(sent);
+        e.setCompletedDateTime(completed);
+        return e;
+    }
+
     static EnvelopesInformation page(String totalSetSize, String nextUri, Envelope... envelopes) {
         EnvelopesInformation info = new EnvelopesInformation();
         info.setEnvelopes(new ArrayList<>(List.of(envelopes)));
