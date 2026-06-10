@@ -53,6 +53,11 @@ final class CandidateTextStripper extends PDFTextStripper {
         addOperator(new SetNonStrokingDeviceCMYKColor(this));
     }
 
+    /**
+     * Captures each glyph's fill colour while the graphics state is still live. Under
+     * {@code setSortByPosition(true)} the state is reset by the time {@link #writeString} runs, so
+     * the colour is recorded here keyed by {@link TextPosition} identity (spec 004 §2.3, §10).
+     */
     @Override
     protected void processTextPosition(TextPosition text) {
         // Graphics state is live here — capture the fill colour before the post-sort reset (§2.3).
@@ -60,6 +65,11 @@ final class CandidateTextStripper extends PDFTextStripper {
         super.processTextPosition(text);
     }
 
+    /**
+     * Classifies one assembled run: flags it as a candidate when it is tiny (effective on-page size
+     * below the threshold) and/or near-white, reading the per-glyph fill colour captured by
+     * {@link #processTextPosition} (spec 004 §2.2–§3).
+     */
     @Override
     protected void writeString(String run, List<TextPosition> textPositions) {
         String anchorString = run == null ? "" : run.trim();
