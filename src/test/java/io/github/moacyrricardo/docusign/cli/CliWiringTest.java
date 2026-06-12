@@ -65,7 +65,8 @@ class CliWiringTest {
 
     @Test
     void globalOptionParsesBeforeSubcommand() {
-        ParseResult result = root().parseArgs("--json", "scan");
+        // `scan` requires a <pdf> positional (spec 004 §5); supply a dummy so parsing completes.
+        ParseResult result = root().parseArgs("--json", "scan", "doc.pdf");
         RootCommand rootCmd = (RootCommand) result.commandSpec().userObject();
         assertTrue(rootCmd.globalOptions().json);
         assertTrue(result.subcommand().commandSpec().name().equals("scan"));
@@ -74,7 +75,7 @@ class CliWiringTest {
     @Test
     void globalOptionParsesAfterSubcommand() {
         // --json is mixed into the subcommand too, so it parses after the name.
-        ParseResult result = root().parseArgs("scan", "--json");
+        ParseResult result = root().parseArgs("scan", "doc.pdf", "--json");
         ParseResult scan = result.subcommand();
         assertEquals("scan", scan.commandSpec().name());
         // The mixin on the subcommand captured --json.

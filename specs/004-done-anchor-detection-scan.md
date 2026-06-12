@@ -1,6 +1,6 @@
 # 004 — Anchor detection engine and the `scan` command
 
-Status: **todo**
+Status: **done** (branch `spec-004-anchor-detection-scan`)
 
 Prescriptive decision doc for the **anchor detection engine** (local PDF analysis) and the
 `scan <pdf>` command. Resolves the detection portion of [001](001-todo-cli-design.md) §5.1–§5.3
@@ -431,3 +431,30 @@ dumped every candidate accessor, capturing colour in both the `processTextPositi
 
 The `AnchorCandidate` shape in §4 is **unchanged** by the spike — only the stripper's internals
 (operator registration + capture timing + size accessor) changed — so 005's contract holds.
+
+---
+
+## Implementation Notes (branch `spec-004-anchor-detection-scan`)
+
+Built as specified; the §10 spike findings held against PDFBox 3.0.3 and are now covered by
+regression tests (white text fires NEAR_WHITE only with the colour operators registered;
+CTM-scaled 12pt@0.5 is flagged via `getYScale`, which `getFontSizeInPt` would miss). Notes:
+
+- **Colour operators** are constructed with `this` (`new SetNonStrokingColor(this)`, …) — PDFBox
+  3.x's `OperatorProcessor` subclasses take the owning `PDFStreamEngine`. The §2.1 sketch's
+  no-arg form does not compile against 3.0.3.
+- **Effective size** uses `getYScale()` (the height axis) as the per-glyph size and takes the
+  **max** across a run's glyphs, exactly as §2.2 prescribes for the anisotropic-safe path.
+- **Run colour** is taken from the first glyph's live-captured RGB (a run shares one fill colour);
+  the identity-map bridge from `processTextPosition` to `writeString` works as the spike found.
+- **Document-order y axis.** Sorting uses `AnchorCandidate.y` from `getYDirAdj()` — PDFBox
+  *display* space, where y increases downward — so "top to bottom" is y **ascending** here. The
+  spec's "y desc" (§7) refers to PDF user space (origin bottom-left); the display-space adjusted
+  value inverts that, and the multi-page test confirms page-1-then-page-3 / top-to-bottom order.
+- **`scan` now requires a `<pdf>` positional** (§5). Two 002 `CliWiringTest` cases that used a bare
+  `scan` to exercise global-option parsing were updated to pass a dummy `doc.pdf`; this is the only
+  cross-spec test change.
+- **`AnchorScanner.scan(File, ScanOptions)`** replaced the 002 `scan(Object)` shell — the §4
+  contract 005 consumes.
+- **Out of scope (unchanged, §9):** background-colour analysis for white-on-white, password-prompt
+  for encrypted PDFs, stroke-only hidden text, and all DocuSign auth/tab construction (005).
