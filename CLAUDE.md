@@ -33,6 +33,11 @@ strings** (tiny / white-on-white text) bound to signing tabs. See
   output abstraction). When in doubt, 002 wins.
 - Dependency order: `002` → `{003, 004}` → `005`; `006`/`007` any time after `003`.
 
+## API Modules
+
+None. `docusign-cli` is a standalone executable (fat jar); no module's compiled artifact is
+consumed as a library by another service.
+
 ## Conventions
 
 - **No Linear / no `linearis` for this project.** The **spec number is the unit of work** — there
