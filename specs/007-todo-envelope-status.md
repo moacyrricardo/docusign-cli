@@ -235,8 +235,10 @@ when no usable credentials/consent exist. Catch it at the command boundary (or l
 the root handler), print a short message pointing the user to `docusign-cli login`, and exit
 `ExitCode.NOAUTH`. Do not attempt interactive auth here.
 
-**Other API/network errors.** Any other `ApiException` (401 after a mint attempt, 5xx, rate
-limiting) → `ExitCode.API`; a transport `IOException`/`UnknownHostException` → `ExitCode.NETWORK`.
+**Other API/network errors.** Any other `ApiException` with an HTTP code (401 after a mint attempt,
+5xx, rate limiting) → `ExitCode.API`. The SDK's REST `invokeAPI` throws **only** `ApiException`
+(Jersey wraps the connection error), so a transport failure arrives as an `ApiException` with
+`getCode() == 0` → `ExitCode.NETWORK` — there is no bare `IOException` to catch on REST calls.
 Print a concise `DocuSign API error (<code>): <message>` to stderr; include the DocuSign
 `errorCode`/`message` from the response body when present. Full detail (body, stack) only under the
 global verbose flag (002).
@@ -257,8 +259,9 @@ asked for is not lost to a recipients-only failure.
   truncated, non-hex, and obviously-bad inputs exit `USAGE` with no API call). Verify the API is
   never invoked on invalid input (mock `EnvelopesApi`, assert no interaction).
 - **Unit — error mapping:** mock `EnvelopesApi.getEnvelope` to throw `ApiException` with codes
-  404 / 401 / 500 → assert `NOTFOUND` / `API` / `API` and the stderr messages; a transport
-  `IOException` → `NETWORK`. Mock `authenticatedApiClient()` to throw `AuthException` → `NOAUTH`.
+  404 / 401 / 500 → assert `NOTFOUND` / `API` / `API` and the stderr messages; an `ApiException`
+  with `getCode() == 0` (wrapped transport failure) → `NETWORK`. Mock `authenticatedApiClient()` to
+  throw `AuthException` → `NOAUTH`.
 - **Unit — `--recipients` isolation:** `getEnvelope` ok + `listRecipients` throws → envelope
   block still rendered, warning on stderr, exit `API`.
 - **Rendering:** snapshot/assert both table and `--json` outputs for (a) no recipients and

@@ -1,6 +1,6 @@
 # 003 — Login & persistent JWT authentication
 
-Status: **todo** (spec — prescriptive decision; ready to build)
+Status: **done** (branch `spec-003-login-jwt-auth`)
 
 Implements the JWT Grant auth flow framed in [001 §4](001-todo-cli-design.md). Provides the
 `login` and `auth status` commands, the JWT token-minting mechanics, the on-disk token cache,
@@ -97,11 +97,25 @@ static final long SKEW_SECONDS = 60;             // freshness margin, applied at
 integration may act as `user_id`. The demo/prod host is selected by the resolved `Environment`
 (002 §7); this spec does **not** define its own host enum.
 
+> **SDK stack — verified against `docusign-esign-java:5.1.0`.** The SDK's HTTP client is
+> **Jersey / JAX-RS** (not OkHttp/Gson), OAuth uses **Apache Oltu**, and JWT key handling uses
+> **BouncyCastle** (`PemReader` + `KeyFactory`/`PKCS8EncodedKeySpec`). The SDK declares all of these
+> as `optional`, so 002's `pom.xml` must list them explicitly (`jakarta.ws.rs-api`, Jersey client +
+> media + `jersey-hk2`, Oltu, jose4j, BouncyCastle) — confirmed present after the 002 build. This
+> spec assumes that stack.
+
 ### 4.2 Private-key loading — `PrivateKeyLoader`
 
-`ApiClient.requestJWTUserToken(clientId, userId, oauthBasePath, privateKeyBytes, expiresInSeconds, scopes)`
-takes the **raw PEM bytes** including the `-----BEGIN ... PRIVATE KEY-----` armor. The SDK parses
-them internally with BouncyCastle.
+The 5.x signature (verified against `docusign-esign-java:5.1.0`) is
+`ApiClient.requestJWTUserToken(String clientId, String userId, List<String> scopes, byte[] privateKeyBytes, long expiresInSeconds)`
+— **5 args, no base-path parameter**. The OAuth base path is set on the `ApiClient` *beforehand*
+via `setOAuthBasePath(...)` (done by 002's `ApiClientFactory.oauthClient()`), not passed to this
+call. It takes the **raw PEM bytes** including the `-----BEGIN ... PRIVATE KEY-----` armor; the SDK
+parses them internally with BouncyCastle.
+
+> ⚠ The 3.x signature took the base path as an argument and scopes last; **5.x dropped the
+> base-path arg and moved `scopes` to position 3**. An earlier draft of this spec used the 3.x form
+> — it would not compile against 5.1.0. Target 5.x.
 
 ```java
 byte[] load(Path keyPath) throws AuthException;  // Files.readAllBytes; validates non-empty
@@ -130,17 +144,22 @@ Implementation:
 1. `ApiClient client = factory.oauthClient();` — the OAuth-host client (002 §7; host =
    `env.oAuthBasePath()`).
 2. `byte[] key = privateKeyLoader.load(config.privateKeyPath());`
-3. `OAuthToken t = client.requestJWTUserToken(config.integrationKey(), config.userId(),
-   env.oAuthBasePath(), key, TOKEN_LIFETIME_SECONDS, SCOPES);`
+3. The client's OAuth base path was already set in step 1 (the factory called
+   `setOAuthBasePath(env.oAuthBasePath())`). Mint with the **5.x** arg order:
+   `OAuthToken t = client.requestJWTUserToken(config.integrationKey(), config.userId(),
+   SCOPES, key, TOKEN_LIFETIME_SECONDS);`  // (clientId, userId, scopes, key, expiresInSeconds)
 4. Store the **raw** expiry — `Instant expiresAt = Instant.now().plusSeconds(t.getExpiresIn());`.
    The `SKEW_SECONDS` margin is **not** baked in here; freshness is decided at check time by
    `Token.isExpired(now, Duration.ofSeconds(SKEW_SECONDS))` (002 §4.2), keeping skew in exactly
    one place.
 5. Return `new Token(t.getAccessToken(), "Bearer", expiresAt)`.
 
-`requestJWTUserToken` throws `com.docusign.esign.client.auth.OAuth.OAuthException` /
-`ApiException`; when the response body contains `"consent_required"` the minter converts it to a
-`ConsentException` carrying the consent URL (§5).
+`requestJWTUserToken` declares `throws IllegalArgumentException, ApiException, IOException`. A
+`consent_required` response arrives as an `ApiException` whose body contains `"consent_required"`;
+the minter detects that and converts it to a `ConsentException` carrying the consent URL (§5). A
+transport failure (no HTTP response) surfaces as a **checked `IOException`** thrown directly →
+`ExitCode.NETWORK` (§11); an unreadable/invalid key surfaces as `IllegalArgumentException` /
+`ApiException` → `ExitCode.CONFIG`.
 
 ### 4.4 userinfo — `accountId` + `baseUri`
 
@@ -335,7 +354,7 @@ still a successful status report); `ExitCode.NOAUTH` when no credentials/account
 | consent_required (login) | body contains `consent_required` | print/open consent URL (§5) | `ExitCode.CONSENT` |
 | consent_required (refresh path) | same | wrap → "run login first" | `ExitCode.NOAUTH` |
 | Clock skew (`exp`/`iat` rejected) | SDK/HTTP 400, body mentions invalid time/`iat` | hint: "check system clock"; freshness skew is applied at check time (§4.3/§6) | `ExitCode.SOFTWARE` |
-| Network/DNS/timeout | `ApiException` w/ cause `IOException`/`UnknownHostException` | "could not reach <oauthHost>" | `ExitCode.NETWORK` |
+| Network/DNS/timeout (JWT / userinfo) | checked `IOException`/`UnknownHostException` thrown **directly** by `requestJWTUserToken` / `getUserInfo` | "could not reach <oauthHost>" | `ExitCode.NETWORK` |
 | userinfo has no accounts | empty account list | "user has no DocuSign account" | `ExitCode.CONFIG` |
 | Anything else | catch-all | print message; full stack only with `--verbose` (002) | `ExitCode.SOFTWARE` |
 
@@ -356,9 +375,11 @@ a grossly wrong local clock, which we cannot fix — we only hint.
   `ConsentException` → surfaces as `AuthException`/`ExitCode.NOAUTH`, **never** an interactive prompt.
   Mock `JwtTokenMinter`.
 - **`JwtTokenMinter`** — inject a fake `ApiClient`/`ApiClientFactory`: assert it is called with the
-  configured integration key, user id, `env.oAuthBasePath()`, key bytes, `TOKEN_LIFETIME_SECONDS`,
-  and `["signature","impersonation"]`; a `consent_required` response maps to `ConsentException`
-  with a non-null URL; the returned `Token` stores the raw (un-skewed) expiry.
+  configured integration key, user id, `["signature","impersonation"]` (scopes), key bytes, and
+  `TOKEN_LIFETIME_SECONDS` (5.x arg order), and that the OAuth base path was set on the client via
+  `setOAuthBasePath` (it is **not** a `requestJWTUserToken` argument); a `consent_required` response
+  maps to `ConsentException` with a non-null URL; the returned `Token` stores the raw (un-skewed)
+  expiry.
 - **`LoginCommand`** via Picocli `CommandLine.execute` with mocked minter/`Config`: success path
   persists `account_id`/`base_uri` and writes the token; consent path prints the URL and returns
   `ExitCode.CONSENT`.
@@ -366,4 +387,35 @@ a grossly wrong local clock, which we cannot fix — we only hint.
   warning; assert no network calls (mock factory verifies zero interactions).
 - Live JWT against `account-d.docusign.com` is a manual smoke test, not part of CI (needs real
   consent + key).
-```
+
+---
+
+## Implementation Notes (branch `spec-003-login-jwt-auth`)
+
+Built as specified; the SDK-5.1.0 (Jersey) corrections in §4 held — `requestJWTUserToken` compiled
+and ran with the 5-arg signature, `OAuth.OAuthToken`/`OAuth.UserInfo`/`OAuth.Account` are the
+nested 5.x types. Divergences and decisions made during coding:
+
+- **Minter SDK seams.** `JwtTokenMinter` isolates the two SDK calls behind overridable
+  package-visible methods (`requestJwt(ApiClient, byte[])` and `fetchAccount(ApiClient, String)`)
+  so unit tests inject a fake `ApiClient`/account with no live endpoint. The class is therefore
+  non-final (it was unspecified); `PrivateKeyLoader` stays package-private.
+- **Login minter injection.** `LoginCommand` is `final` (matches the other command shells), so the
+  test seam is a package-private `useMinter(JwtTokenMinter)` setter rather than a subclass override.
+  `login` builds its minter from `CliContext`'s public pieces (`apiClientFactory()`, `config()`,
+  `environment()`) — the 002 `CliContext` contract was **not** extended with a minter accessor.
+- **`auth status` parent chain.** `AuthStatusCommand` reaches the root `CliContext` via
+  `@ParentCommand AuthCommand` → a new `AuthCommand.root()` (`@ParentCommand RootCommand`), since
+  the leaf's direct Picocli parent is `auth`, not the root. `AuthCommand` gained the `root` field
+  and accessor; its prior bare-usage behavior is unchanged.
+- **Consent URL is built deterministically** (§5) in the minter and reused by `login` on the
+  re-prompt — it is never parsed out of the error body. `consent_required` is detected from either
+  the `ApiException` response body or message.
+- **Host-mismatch heuristic.** `auth status` flags a mismatch by testing whether the stored
+  `base_uri` host contains `www.docusign.net` (prod) against the resolved `Environment`. This is a
+  pragmatic check independent of `RootCommand`'s `base_uri`→`Environment` inference; both are
+  substring heuristics and agree for the standard demo/prod hosts.
+- **Dual output contract honored:** `login` and `auth status` emit both a human view
+  (`message`/`record`) and a structured `object(...)` payload, per 002 §5.
+- **Out of scope / deferred:** no live JWT smoke test in CI (needs real consent + key); grossly
+  wrong local clock is only hinted (§11), not corrected.

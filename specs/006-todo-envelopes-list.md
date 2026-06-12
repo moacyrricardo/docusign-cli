@@ -259,10 +259,12 @@ sync.
   `Not authenticated; run 'docusign-cli login'.` and exits `ExitCode.NOAUTH`. This command adds no
   auth logic.
 - **DocuSign API errors** (`com.docusign.esign.client.ApiException`): catch, map to a concise
-  stderr message including the HTTP status and DocuSign error body → `ExitCode.API` (transport
-  failures → `ExitCode.NETWORK`). Rate-limit (HTTP 429) during `--doc-name` document fetches is
-  reported with guidance to narrow the window. Do not leak stack traces unless a global
-  `--verbose`/debug flag (002) is set.
+  stderr message including the HTTP status and DocuSign error body → `ExitCode.API`. The SDK's REST
+  calls go through Jersey's `invokeAPI`, which throws **only** `ApiException` (no bare
+  `IOException`): a transport failure has no HTTP response and arrives as an `ApiException` with
+  `getCode() == 0` — map those to `ExitCode.NETWORK`. Rate-limit (HTTP 429) during `--doc-name`
+  document fetches is reported with guidance to narrow the window. Do not leak stack traces unless a
+  global `--verbose`/debug flag (002) is set.
 
 Exit codes (002 §6.1): `OK` (0) success incl. empty; `USAGE` (2) bad `--status`/date; `NOAUTH`
 (4) not authenticated; `API` (7) / `NETWORK` (8) DocuSign/transport errors.

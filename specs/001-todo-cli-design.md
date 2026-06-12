@@ -214,6 +214,14 @@ truth**. The decisions:
    confirmed the `AnchorCandidate` contract is unchanged.
 3. **Feature packages:** `auth`, `anchor`, `send`, `envelope` for command/feature classes;
    `cli`/`config`/`output`/`docusign` for foundation (002 §2).
+   - **SDK stack verified (`docusign-esign-java:5.1.0`):** the eSignature SDK is **Jersey/JAX-RS**
+     (not OkHttp/Gson), with Apache Oltu + BouncyCastle for OAuth/JWT, all declared `optional` so
+     002's pom lists them explicitly (done by the 002 build). Two consequences corrected across the
+     specs: (a) 003's `requestJWTUserToken` used the old 3.x 6-arg signature — 5.x is 5 args with no
+     base-path parameter (set via `setOAuthBasePath`) and scopes at position 3; (b) REST transport
+     failures arrive as `ApiException` with `getCode() == 0` (Jersey `invokeAPI` wraps them), not a
+     bare `IOException` — so the `NETWORK` mapping in 005/006/007 keys off code 0, while the JWT
+     calls in 003 *do* throw a checked `IOException` directly.
 4. **`envelopes list` filters:** two independent, combinable (AND) client-side filters —
    `--doc-name` (deep, per-envelope `listDocuments`, cost-warned) and `--subject` (cheap,
    subject-only) (006 §3.3–§3.5).
