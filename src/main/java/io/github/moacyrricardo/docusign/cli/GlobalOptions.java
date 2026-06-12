@@ -1,8 +1,10 @@
 package io.github.moacyrricardo.docusign.cli;
 
 import io.github.moacyrricardo.docusign.docusign.Environment;
-import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.ParameterException;
+import picocli.CommandLine.Spec;
+import picocli.CommandLine.Model.CommandSpec;
 
 import java.nio.file.Path;
 import java.util.Optional;
@@ -13,6 +15,10 @@ import java.util.Optional;
  * specifying neither leaves the environment to be resolved from config, defaulting to DEMO.
  */
 public final class GlobalOptions {
+
+    @Option(names = {"-h", "--help"}, usageHelp = true,
+            description = "Show this help message and exit.")
+    public boolean help;
 
     @Option(names = "--json",
             description = "Emit machine JSON instead of the human table.")
@@ -30,29 +36,31 @@ public final class GlobalOptions {
             description = "Print full stack traces on unexpected errors.")
     public boolean verbose;
 
-    @ArgGroup(exclusive = true)
-    public EnvironmentFlags environmentFlags = new EnvironmentFlags();
+    @Option(names = "--demo",
+            description = "Use the DocuSign demo environment (default).")
+    public boolean demo;
 
-    /** Mutually-exclusive {@code --demo}/{@code --prod} pair (spec 002 §3.2). */
-    public static final class EnvironmentFlags {
-        @Option(names = "--demo",
-                description = "Use the DocuSign demo environment.")
-        public boolean demo;
+    @Option(names = "--prod",
+            description = "Use the DocuSign production environment.")
+    public boolean prod;
 
-        @Option(names = "--prod",
-                description = "Use the DocuSign production environment.")
-        public boolean prod;
-    }
+    @Spec(Spec.Target.MIXEE)
+    CommandSpec mixee;
 
     /**
      * The environment explicitly selected by a flag, if any. Empty means "resolve from config,
-     * then default to DEMO" (spec 002 §3.2, §7).
+     * then default to DEMO" (spec 002 §3.2, §7). {@code --demo} and {@code --prod} are mutually
+     * exclusive; supplying both is a usage error.
      */
     public Optional<Environment> explicitEnvironment() {
-        if (environmentFlags != null && environmentFlags.prod) {
+        if (demo && prod) {
+            throw new ParameterException(mixee.commandLine(),
+                    "--demo and --prod are mutually exclusive.");
+        }
+        if (prod) {
             return Optional.of(Environment.PROD);
         }
-        if (environmentFlags != null && environmentFlags.demo) {
+        if (demo) {
             return Optional.of(Environment.DEMO);
         }
         return Optional.empty();
