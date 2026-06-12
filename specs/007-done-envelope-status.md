@@ -1,6 +1,6 @@
 # 007 — `envelope status <id>`: single-envelope status lookup
 
-Status: **todo**
+Status: **done** — branch `spec-007-envelope-status`
 
 Prescriptive spec for the `envelope status <envelopeId>` command: fetch and display the
 status of one envelope by ID, optionally including per-recipient status. Implements goal §2.3
@@ -269,3 +269,41 @@ asked for is not lost to a recipients-only failure.
 - **Integration (optional, gated on demo credentials):** run `envelope status <realId>` and
   `--recipients` against the DocuSign demo environment; assert exit `0` and presence of the
   status field. Skipped when credentials are absent.
+
+---
+
+## Implementation Notes
+
+Branch: `spec-007-envelope-status` (stacked on `spec-006-envelopes-list`).
+
+How the implementation diverged from or refined the spec:
+
+- **Read seam is `EnvelopeStatusReader`, not a mocked `EnvelopesApi`.** Mirroring 006's
+  `EnvelopeQuery`, the two DocuSign calls (`getEnvelope` + `listRecipients`) sit behind a
+  narrow `EnvelopeStatusReader` interface; production wraps the SDK via
+  `EnvelopeStatusReader.usingSdk(api)`, tests supply a stub. This keeps the command and its
+  error/rendering logic fully unit-testable with no live calls, as §6 requires.
+- **Grouper wiring: `EnvelopeCommand` gained a `RootCommand` parent.** The 002 scaffold for
+  `EnvelopeCommand` had no path to the runtime context. To let the `status` leaf reach
+  `CliContext` it now carries `@ParentCommand RootCommand root` with a `root()` accessor, and
+  the leaf reaches the context via `envelope.root().context()` — identical to how
+  `EnvelopesListCommand` reaches it through `EnvelopesCommand` (006). The leaf's
+  `@ParentCommand` is its immediate parent `EnvelopeCommand` (Picocli injects the immediate
+  parent), not the root directly.
+- **JSON null-omission done via a `LinkedHashMap` payload, not Jackson config.** The shared
+  `JsonWriter`/`ObjectMapper` has no global `NON_NULL` inclusion (006 relies on its current
+  behaviour). Rather than change the shared mapper, the command builds the JSON payload as a
+  `LinkedHashMap` and conditionally omits the `recipients` key when the flag is absent (§3.2's
+  "prefer omit"), matching 006's approach. Envelope-level null timestamps are emitted as JSON
+  `null` and rendered as `-` in the table.
+- **Recipient ordering is explicit in the DTO.** `EnvelopeStatusView.from(env, recipients)`
+  sorts signers by numeric routing order (unparseable/blank orders sort last) then by name, so
+  display is stable regardless of API order. v1 surfaces signers only (carbon copies/agents
+  ignored), per §3.
+- **`--recipients` failure isolation matches §5 exactly:** the envelope-level block is rendered
+  first, a `Could not load recipients: …` warning goes to stderr, and the command then throws a
+  `CliException(API)` so the exit code reflects the partial failure without losing the status
+  the user asked for.
+- **No integration test committed.** The optional demo-account integration test (§6) is left
+  out to keep CI credential-free; the `EnvelopeStatusReader` seam makes adding one later
+  straightforward.
